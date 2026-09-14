@@ -12,7 +12,7 @@ from gradio_client import Client, handle_file
 
 SPACE_ID = os.getenv("HF_SPACE", "r3gm/wan2-2-fp8da-aoti-preview2")
 
-app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.2")
+app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.3")
 _client: Client | None = None
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
@@ -36,28 +36,29 @@ def run_generation(job_id: str, input_path: Path, prompt: str, duration: float) 
         set_job(job_id, status="generating", message="Generando vídeo con Wan 2.2…")
         client = get_client()
 
-        # Usamos nombres de parámetros para evitar que un cambio en el Space
-        # desplace frame_multiplier y convierta, por ejemplo, True/1 en su valor.
+        # The current HF Space exposes these 19 inputs in this exact order.
+        # In particular frame_multi is input #14 and accepts 16/32/64/128.
+        # Positional arguments avoid Gradio component-name/schema mismatches.
         result = client.predict(
-            input_image=handle_file(str(input_path)),
-            last_image=None,
-            prompt=prompt,
-            steps=6,
-            negative_prompt="",
-            duration_seconds=duration,
-            guidance_scale=1.0,
-            guidance_scale_2=1.0,
-            seed=42,
-            randomize_seed=True,
-            quality=6,
-            scheduler="UniPCMultistep",
-            flow_shift=3.0,
-            frame_multiplier=16,
-            upscale_model="4x-UltraSharp",
-            upscale_factor=1.0,
-            video_component=True,
-            safe_mode=False,
-            enable_safety_checker=True,
+            handle_file(str(input_path)),  # 1 input_image
+            None,                          # 2 last_image
+            prompt,                        # 3 prompt
+            6,                             # 4 steps
+            "",                            # 5 negative_prompt
+            duration,                      # 6 duration_seconds
+            1.0,                           # 7 guidance_scale
+            1.0,                           # 8 guidance_scale_2
+            42,                            # 9 seed
+            True,                          # 10 randomize_seed
+            6,                             # 11 quality
+            "UniPCMultistep",              # 12 scheduler
+            3.0,                           # 13 flow_shift
+            16,                            # 14 frame_multiplier / FPS
+            "4x-UltraSharp",              # 15 upscale_model
+            1.0,                           # 16 upscale_factor
+            True,                          # 17 video_component
+            False,                         # 18 safe_mode
+            True,                          # 19 enable_safety_checker
             api_name="/generate_video",
         )
 
@@ -87,6 +88,7 @@ def run_generation(job_id: str, input_path: Path, prompt: str, duration: float) 
 
         set_job(job_id, status="completed", message="Vídeo generado correctamente.", video_path=str(video_path))
     except Exception as exc:
+        print(f"Generation failed for {job_id}: {type(exc).__name__}: {exc}", flush=True)
         set_job(job_id, status="failed", message=f"Error generando el vídeo: {exc}")
 
 
