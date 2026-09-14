@@ -12,8 +12,21 @@ import android.widget.VideoView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.textfield.TextInputEditText
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private const val BACKEND_URL = "https://imagentovideoai-backend.onrender.com/generate"
+    }
+
     private lateinit var imagePreview: ImageView
     private lateinit var promptInput: TextInputEditText
     private lateinit var durationGroup: RadioGroup
@@ -23,11 +36,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var videoView: VideoView
     private var selectedImageUri: Uri? = null
 
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.MINUTES)
+        .build()
+
     private val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             selectedImageUri = uri
             imagePreview.setImageURI(uri)
-            statusText.text = "Imagen seleccionada. Escribe qué quieres que ocurra."
+            statusText.text = "Imagen seleccionada. Describe el movimiento."
         }
     }
 
@@ -46,12 +65,12 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.selectImageButton).setOnClickListener {
             imagePicker.launch("image/*")
         }
-
         generateButton.setOnClickListener { generateVideo() }
     }
 
     private fun generateVideo() {
-        if (selectedImageUri == null) {
+        val uri = selectedImageUri
+        if (uri == null) {
             statusText.text = "Selecciona una imagen primero."
             return
         }
@@ -63,20 +82,64 @@ class MainActivity : AppCompatActivity() {
         }
 
         val duration = when (durationGroup.checkedRadioButtonId) {
-            R.id.duration10 -> 10
-            R.id.duration15 -> 15
-            else -> 5
+            R.id.duration4 -> 4f
+            else -> 5f
         }
 
-        // La interfaz está preparada para enviar imagen + prompt + duración
-        // a un backend de Image-to-Video. La clave de API debe permanecer en servidor.
         setGeneratingState(true)
-        statusText.text = "Preparando generación de ${duration}s..."
+        statusText.text = "Generando vídeo con Wan 2.2… puede tardar unos minutos."
 
-        window.decorView.postDelayed({
-            setGeneratingState(false)
-            statusText.text = "Interfaz lista. Falta conectar el servidor de IA."
-        }, 900)
+        Thread {
+            try {
+                val inputFile = copyUriToCache(uri)
+                val mime = contentResolver.getType(uri) ?: "image/jpeg"
+                val imageBody = inputFile.asRequestBody(mime.toMediaTypeOrNull())
+                val multipart = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("image", inputFile.name, imageBody)
+                    .addFormDataPart("prompt", prompt.toRequestBody("text/plain".toMediaTypeOrNull()))
+                    .addFormDataPart("duration", duration.toString().toRequestBody("text/plain".toMediaTypeOrNull()))
+                    .build()
+
+                val request = Request.Builder()
+                    .url(BACKEND_URL)
+                    .post(multipart)
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw IllegalStateException("Servidor: HTTP ${response.code}")
+                    }
+                    val body = response.body ?: throw IllegalStateException("Respuesta vacía")
+                    val output = File(cacheDir, "generated_${System.currentTimeMillis()}.mp4")
+                    body.byteStream().use { input ->
+                        FileOutputStream(output).use { out -> input.copyTo(out) }
+                    }
+                    runOnUiThread {
+                        setGeneratingState(false)
+                        statusText.text = "Vídeo generado correctamente."
+                        videoView.visibility = View.VISIBLE
+                        videoView.setVideoURI(Uri.fromFile(output))
+                        videoView.setOnPreparedListener { it.isLooping = true }
+                        videoView.start()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setGeneratingState(false)
+                    statusText.text = "Error: ${e.message ?: "no se pudo generar el vídeo"}"
+                }
+            }
+        }.start()
+    }
+
+    private fun copyUriToCache(uri: Uri): File {
+        val file = File(cacheDir, "input_${System.currentTimeMillis()}.jpg")
+        contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "No se pudo leer la imagen" }
+            FileOutputStream(file).use { output -> input.copyTo(output) }
+        }
+        return file
     }
 
     private fun setGeneratingState(generating: Boolean) {
