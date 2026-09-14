@@ -1,0 +1,48 @@
+name: Backend smoke test
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Create a test image
+        run: |
+          python - <<'PY'
+          from PIL import Image, ImageDraw
+          im = Image.new('RGB', (512, 512), (25, 25, 35))
+          d = ImageDraw.Draw(im)
+          d.ellipse((130, 100, 382, 352), fill=(80, 150, 220), outline=(255,255,255), width=8)
+          d.polygon([(170,110),(105,40),(210,85)], fill=(80,150,220), outline=(255,255,255))
+          d.polygon([(342,110),(407,40),(302,85)], fill=(80,150,220), outline=(255,255,255))
+          d.ellipse((190,170,235,215), fill=(255,255,255))
+          d.ellipse((277,170,322,215), fill=(255,255,255))
+          d.ellipse((208,183,225,205), fill=(10,10,10))
+          d.ellipse((289,183,306,205), fill=(10,10,10))
+          d.arc((190,220,322,310), 10, 170, fill=(255,255,255), width=8)
+          im.save('test.png')
+          PY
+
+      - name: Install Pillow
+        run: python -m pip install pillow
+
+      - name: Generate video through Render
+        run: |
+          curl --fail-with-body --show-error --silent --max-time 900 \
+            -o result.mp4 \
+            -F 'image=@test.png' \
+            -F 'prompt=A cute blue creature moves naturally, looks around and then jumps forward, cinematic motion, stable camera' \
+            -F 'duration=4' \
+            https://imagentovideoai-backend.onrender.com/generate
+          file result.mp4
+          test -s result.mp4
+
+      - name: Upload generated video
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-smoke-test-video
+          path: result.mp4
