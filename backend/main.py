@@ -12,7 +12,7 @@ from gradio_client import Client, handle_file
 
 SPACE_ID = os.getenv("HF_SPACE", "r3gm/wan2-2-fp8da-aoti-preview2")
 
-app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.0")
+app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.1")
 _client: Client | None = None
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
@@ -36,8 +36,8 @@ def run_generation(job_id: str, input_path: Path, prompt: str, duration: float) 
         set_job(job_id, status="generating", message="Generando vídeo con Wan 2.2…")
         client = get_client()
 
-        # Signature verificada contra la versión actual del Space Wan 2.2.
-        # frame_multiplier debe ser 1-6; 1 evita una interpolación innecesaria.
+        # Parámetros en el mismo orden que generate_video() del Space actual.
+        # frame_multiplier es un Dropdown con choices [16, 32, 64, 128].
         result = client.predict(
             handle_file(str(input_path)),
             None,
@@ -52,11 +52,11 @@ def run_generation(job_id: str, input_path: Path, prompt: str, duration: float) 
             6,
             "UniPCMultistep",
             3.0,
-            1,
+            16,
             "4x-UltraSharp",
             1.0,
             True,
-            True,
+            False,
             True,
             api_name="/generate_video",
         )
@@ -104,7 +104,6 @@ async def generate(
     if not prompt.strip():
         raise HTTPException(status_code=400, detail="El prompt no puede estar vacío")
 
-    # El Space actual admite aproximadamente 0.5–10 s; 4-5 s es un rango práctico.
     duration = max(2.0, min(float(duration), 5.0))
     job_id = uuid.uuid4().hex
     workdir = Path(tempfile.mkdtemp(prefix=f"imagentovideoai-{job_id}-"))
@@ -118,19 +117,10 @@ async def generate(
         raise HTTPException(status_code=400, detail=f"No se pudo guardar la imagen: {exc}") from exc
 
     with _jobs_lock:
-        _jobs[job_id] = {
-            "status": "queued",
-            "message": "Trabajo recibido.",
-            "video_path": None,
-        }
+        _jobs[job_id] = {"status": "queued", "message": "Trabajo recibido.", "video_path": None}
 
-    thread = threading.Thread(
-        target=run_generation,
-        args=(job_id, input_path, prompt.strip(), duration),
-        daemon=True,
-    )
+    thread = threading.Thread(target=run_generation, args=(job_id, input_path, prompt.strip(), duration), daemon=True)
     thread.start()
-
     return {"job_id": job_id, "status": "queued", "status_url": f"/status/{job_id}"}
 
 
@@ -154,7 +144,6 @@ def video(job_id: str):
         raise HTTPException(status_code=404, detail="Trabajo no encontrado")
     if job.get("status") != "completed":
         raise HTTPException(status_code=409, detail="El vídeo todavía no está listo")
-
     path = Path(job["video_path"])
     if not path.exists():
         raise HTTPException(status_code=410, detail="El vídeo ya no está disponible")
