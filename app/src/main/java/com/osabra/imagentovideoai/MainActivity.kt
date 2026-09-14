@@ -2,6 +2,8 @@ package com.osabra.imagentovideoai
 
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.Button
 import android.widget.ImageView
@@ -18,13 +20,14 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
     companion object {
-        private const val BACKEND_URL = "https://imagentovideoai-backend.onrender.com/generate"
+        private const val BACKEND_BASE = "https://imagentovideoai-backend.onrender.com"
     }
 
     private lateinit var imagePreview: ImageView
@@ -35,11 +38,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var videoView: VideoView
     private var selectedImageUri: Uri? = null
+    private val handler = Handler(Looper.getMainLooper())
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.MINUTES)
+        .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -69,12 +73,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun generateVideo() {
-        val uri = selectedImageUri
-        if (uri == null) {
+        val uri = selectedImageUri ?: run {
             statusText.text = "Selecciona una imagen primero."
             return
         }
-
         val prompt = promptInput.text?.toString()?.trim().orEmpty()
         if (prompt.isEmpty()) {
             statusText.text = "Describe el movimiento que quieres generar."
@@ -87,34 +89,86 @@ class MainActivity : AppCompatActivity() {
         }
 
         setGeneratingState(true)
-        statusText.text = "Generando vídeo con Wan 2.2… puede tardar unos minutos."
+        videoView.visibility = View.GONE
+        statusText.text = "Enviando imagen al servidor…"
 
         Thread {
             try {
                 val inputFile = copyUriToCache(uri)
                 val mime = contentResolver.getType(uri) ?: "image/jpeg"
-                val imageBody = inputFile.asRequestBody(mime.toMediaTypeOrNull())
                 val multipart = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
-                    .addFormDataPart("image", inputFile.name, imageBody)
+                    .addFormDataPart("image", inputFile.name, inputFile.asRequestBody(mime.toMediaTypeOrNull()))
                     .addFormDataPart("prompt", prompt.toRequestBody("text/plain".toMediaTypeOrNull()))
                     .addFormDataPart("duration", duration.toString().toRequestBody("text/plain".toMediaTypeOrNull()))
                     .build()
 
                 val request = Request.Builder()
-                    .url(BACKEND_URL)
+                    .url("$BACKEND_BASE/generate")
                     .post(multipart)
                     .build()
 
                 httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw IllegalStateException("Servidor: HTTP ${response.code}")
+                    if (!response.isSuccessful) throw IllegalStateException("Servidor HTTP ${response.code}")
+                    val body = response.body?.string() ?: throw IllegalStateException("Respuesta vacía")
+                    val jobId = JSONObject(body).getString("job_id")
+                    runOnUiThread {
+                        statusText.text = "Vídeo en cola. Preparando GPU…"
+                        pollJob(jobId)
                     }
-                    val body = response.body ?: throw IllegalStateException("Respuesta vacía")
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setGeneratingState(false)
+                    statusText.text = "Error: ${e.message ?: "no se pudo iniciar la generación"}"
+                }
+            }
+        }.start()
+    }
+
+    private fun pollJob(jobId: String) {
+        Thread {
+            try {
+                val request = Request.Builder().url("$BACKEND_BASE/status/$jobId").get().build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IllegalStateException("Estado HTTP ${response.code}")
+                    val json = JSONObject(response.body?.string() ?: "{}")
+                    val state = json.optString("status")
+                    val message = json.optString("message", "Procesando…")
+
+                    runOnUiThread {
+                        when (state) {
+                            "completed" -> downloadVideo(jobId)
+                            "failed" -> {
+                                setGeneratingState(false)
+                                statusText.text = message
+                            }
+                            else -> {
+                                statusText.text = message
+                                handler.postDelayed({ pollJob(jobId) }, 5000)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    setGeneratingState(false)
+                    statusText.text = "Error comprobando el trabajo: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun downloadVideo(jobId: String) {
+        statusText.text = "Descargando vídeo…"
+        Thread {
+            try {
+                val request = Request.Builder().url("$BACKEND_BASE/video/$jobId").get().build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IllegalStateException("Vídeo HTTP ${response.code}")
+                    val body = response.body ?: throw IllegalStateException("Vídeo vacío")
                     val output = File(cacheDir, "generated_${System.currentTimeMillis()}.mp4")
-                    body.byteStream().use { input ->
-                        FileOutputStream(output).use { out -> input.copyTo(out) }
-                    }
+                    body.byteStream().use { input -> FileOutputStream(output).use { out -> input.copyTo(out) } }
                     runOnUiThread {
                         setGeneratingState(false)
                         statusText.text = "Vídeo generado correctamente."
@@ -127,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 runOnUiThread {
                     setGeneratingState(false)
-                    statusText.text = "Error: ${e.message ?: "no se pudo generar el vídeo"}"
+                    statusText.text = "Error descargando el vídeo: ${e.message}"
                 }
             }
         }.start()
@@ -145,5 +199,10 @@ class MainActivity : AppCompatActivity() {
     private fun setGeneratingState(generating: Boolean) {
         progressBar.visibility = if (generating) View.VISIBLE else View.GONE
         generateButton.isEnabled = !generating
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 }
