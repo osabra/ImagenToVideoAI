@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
 
                 var videoUrl: String? = null
                 var lastMessage = "Trabajo recibido."
-                repeat(120) {
+                for (attempt in 0 until 120) {
                     Thread.sleep(3000)
                     val statusRequest = Request.Builder()
                         .url("$BACKEND_BASE/status/$jobId")
@@ -127,7 +127,7 @@ class MainActivity : AppCompatActivity() {
                             "failed" -> throw IllegalStateException(lastMessage)
                         }
                     }
-                    if (videoUrl != null) return@repeat
+                    if (videoUrl != null) break
                 }
 
                 val relativeVideoUrl = videoUrl ?: throw IllegalStateException("La generación está tardando demasiado. Inténtalo de nuevo.")
