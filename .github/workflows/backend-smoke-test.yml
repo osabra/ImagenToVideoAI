@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Install Pillow
+        run: python -m pip install pillow
+
       - name: Create a test image
         run: |
           python - <<'PY'
@@ -26,9 +29,6 @@ jobs:
           d.arc((190,220,322,310), 10, 170, fill=(255,255,255), width=8)
           im.save('test.png')
           PY
-
-      - name: Install Pillow
-        run: python -m pip install pillow
 
       - name: Generate video through Render
         run: |
