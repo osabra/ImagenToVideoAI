@@ -25,3 +25,7 @@ Variables opcionales:
 
 - `HF_SPACE`: Space de Hugging Face a utilizar. Por defecto: `r3gm/wan2-2-fp8da-aoti-preview2`.
 - `HF_TOKEN`: token de Hugging Face opcional para acceder al Space.
+
+## Build
+
+El workflow de GitHub Actions compila `app-debug.apk` en cada push a `main`.
