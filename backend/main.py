@@ -12,7 +12,7 @@ from gradio_client import Client, handle_file
 
 SPACE_ID = os.getenv("HF_SPACE", "r3gm/wan2-2-fp8da-aoti-preview2")
 
-app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.1")
+app = FastAPI(title="ImagenToVideoAI Backend", version="1.1.2")
 _client: Client | None = None
 _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
@@ -36,28 +36,28 @@ def run_generation(job_id: str, input_path: Path, prompt: str, duration: float) 
         set_job(job_id, status="generating", message="Generando vídeo con Wan 2.2…")
         client = get_client()
 
-        # Parámetros en el mismo orden que generate_video() del Space actual.
-        # frame_multiplier es un Dropdown con choices [16, 32, 64, 128].
+        # Usamos nombres de parámetros para evitar que un cambio en el Space
+        # desplace frame_multiplier y convierta, por ejemplo, True/1 en su valor.
         result = client.predict(
-            handle_file(str(input_path)),
-            None,
-            prompt,
-            6,
-            "",
-            duration,
-            1.0,
-            1.0,
-            42,
-            True,
-            6,
-            "UniPCMultistep",
-            3.0,
-            16,
-            "4x-UltraSharp",
-            1.0,
-            True,
-            False,
-            True,
+            input_image=handle_file(str(input_path)),
+            last_image=None,
+            prompt=prompt,
+            steps=6,
+            negative_prompt="",
+            duration_seconds=duration,
+            guidance_scale=1.0,
+            guidance_scale_2=1.0,
+            seed=42,
+            randomize_seed=True,
+            quality=6,
+            scheduler="UniPCMultistep",
+            flow_shift=3.0,
+            frame_multiplier=16,
+            upscale_model="4x-UltraSharp",
+            upscale_factor=1.0,
+            video_component=True,
+            safe_mode=False,
+            enable_safety_checker=True,
             api_name="/generate_video",
         )
 
