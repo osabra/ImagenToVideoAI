@@ -17,6 +17,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
@@ -79,7 +80,8 @@ class MainActivity : AppCompatActivity() {
         val duration = if (durationGroup.checkedRadioButtonId == R.id.duration4) 4f else 5f
 
         setGeneratingState(true)
-        statusText.text = "Generando vídeo con IA… puede tardar unos minutos."
+        statusText.text = "Subiendo imagen…"
+        videoView.visibility = View.GONE
 
         Thread {
             try {
@@ -97,16 +99,57 @@ class MainActivity : AppCompatActivity() {
                     .post(multipart)
                     .build()
 
+                val jobId: String
                 httpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) throw IllegalStateException("Servidor: HTTP ${response.code}")
-                    val body = response.body ?: throw IllegalStateException("Respuesta vacía")
+                    val text = response.body?.string() ?: throw IllegalStateException("Respuesta vacía")
+                    val json = JSONObject(text)
+                    jobId = json.optString("job_id")
+                    if (jobId.isBlank()) throw IllegalStateException(json.optString("detail", "No se creó el trabajo"))
+                }
+
+                var videoUrl: String? = null
+                var lastMessage = "Trabajo recibido."
+                repeat(120) {
+                    Thread.sleep(3000)
+                    val statusRequest = Request.Builder()
+                        .url("$BACKEND_BASE/status/$jobId")
+                        .get()
+                        .build()
+                    httpClient.newCall(statusRequest).execute().use { response ->
+                        if (!response.isSuccessful) throw IllegalStateException("Estado: HTTP ${response.code}")
+                        val json = JSONObject(response.body?.string() ?: "{}")
+                        val state = json.optString("status")
+                        lastMessage = json.optString("message", lastMessage)
+                        runOnUiThread { statusText.text = lastMessage }
+                        when (state) {
+                            "completed" -> videoUrl = json.optString("video_url").takeIf { it.isNotBlank() }
+                            "failed" -> throw IllegalStateException(lastMessage)
+                        }
+                    }
+                    if (videoUrl != null) return@repeat
+                }
+
+                val relativeVideoUrl = videoUrl ?: throw IllegalStateException("La generación está tardando demasiado. Inténtalo de nuevo.")
+                val absoluteVideoUrl = if (relativeVideoUrl.startsWith("http")) relativeVideoUrl else "$BACKEND_BASE$relativeVideoUrl"
+                runOnUiThread { statusText.text = "Descargando vídeo…" }
+
+                val videoRequest = Request.Builder().url(absoluteVideoUrl).get().build()
+                httpClient.newCall(videoRequest).execute().use { response ->
+                    if (!response.isSuccessful) throw IllegalStateException("Vídeo: HTTP ${response.code}")
+                    val body = response.body ?: throw IllegalStateException("Vídeo vacío")
                     val output = File(cacheDir, "generated_${System.currentTimeMillis()}.mp4")
-                    body.byteStream().use { input -> FileOutputStream(output).use { out -> input.copyTo(out) } }
+                    FileOutputStream(output).use { out -> body.byteStream().use { input -> input.copyTo(out) } }
+                    if (output.length() < 1024) throw IllegalStateException("El vídeo recibido no es válido")
                     runOnUiThread {
                         setGeneratingState(false)
                         statusText.text = "Vídeo generado correctamente."
                         videoView.visibility = View.VISIBLE
                         videoView.setVideoURI(Uri.fromFile(output))
+                        videoView.setOnErrorListener { _, what, extra ->
+                            statusText.text = "No se puede reproducir el vídeo ($what/$extra)"
+                            true
+                        }
                         videoView.setOnPreparedListener { it.isLooping = true }
                         videoView.start()
                     }
